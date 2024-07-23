@@ -1,6 +1,9 @@
 #include <iostream>
+#include <fstream>
 #include <GL/glut.h>
 #include <cmath>
+
+#include <vector>
 
 void reshape(int w, int h) {
     glViewport(0, 0, (GLsizei) w, (GLsizei) h);
@@ -14,6 +17,19 @@ void timer(int value) {
     glutTimerFunc(16, timer, 0);
 }
 
+struct Vector2
+{
+    float x;
+    float y;
+
+    Vector2(float x1, float y1): x(x1),y(y1) {
+
+    }
+
+    Vector2():x(0), y(0) {
+
+    }
+};
 
 void drawCircle(float cx, float cy, float r) {
     int numSegments = 100;
@@ -28,11 +44,18 @@ void drawCircle(float cx, float cy, float r) {
     glEnd();
 }
 
+int circleCount = 64;
+
 int screenWidth, screenHeight;
 float boundX, boundY;
+
+float particleSpacing = 10.0f;
+
 float radius = 10.0f;
-float circleX, circleY;
-float velocityY = 0.0f, velocityX = 0.0f;
+
+std::vector<Vector2> positions;
+std::vector<Vector2> velocities;
+
 float gravity = -0.5f;
 
 
@@ -41,15 +64,25 @@ void display() {
 
     glColor3f(0.0f, 0.0f, 1.0f);
 
+    // initialize
 
-    drawCircle(circleX, circleY, radius);
+    for(int i = 0; i < positions.size(); i++) {
+        drawCircle(positions[i].x, positions[i].y, radius);
+    }
 
-    velocityY += gravity;
-    circleY += velocityY;
+    // update
 
-    if(circleY - radius < 0) {
-        circleY = radius;
-        velocityY = -velocityY * 0.8f;
+    for(int i = 0; i < positions.size(); i++) {
+        velocities[i].y += gravity;
+
+        positions[i].x += velocities[i].x;
+        positions[i].y += velocities[i].y;
+
+        // collisions
+        if(positions[i].y - radius < 0) {
+            positions[i].y = radius;
+            velocities[i].y = -velocities[i].y * 0.8f;
+        }
     }
 
     glutSwapBuffers();
@@ -60,20 +93,35 @@ int main(int argc, char** argv)
 {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-    glutInitWindowSize(400, 300);
+    glutInitWindowSize(1024, 576);
 
     glutCreateWindow("Hello world!");
 
-    // initialize initial circle position
-    circleX = glutGet(GLUT_WINDOW_WIDTH) / 2.0f;
-    circleY = glutGet(GLUT_WINDOW_HEIGHT) / 2.0f;
-
+    // initialize
+    int particlesPerRow = (int)sqrt(circleCount);
+    int particlesPerCol = (circleCount - 1) / particlesPerRow + 1;
+    float spacing = radius*2 + particleSpacing;
 
     boundX = glutGet(GLUT_WINDOW_WIDTH) - radius;
     boundY = glutGet(GLUT_WINDOW_HEIGHT) - radius;
 
     screenWidth = glutGet(GLUT_WINDOW_WIDTH);
     screenHeight = glutGet(GLUT_WINDOW_HEIGHT);
+
+    for(int i = 0; i < circleCount; i++) {
+        int row = i / particlesPerRow;
+        int col = i % particlesPerRow;
+
+        // Center the entire grid of circles within the window
+        float offsetX = (screenWidth - (particlesPerRow - 1) * spacing) / 2.0f;
+        float offsetY = (screenHeight - (particlesPerCol - 1) * spacing) / 2.0f;
+
+        float x = col * spacing + offsetX;
+        float y = row * spacing + offsetY;
+
+        positions.push_back(Vector2(x, y));
+        velocities.push_back(Vector2());
+    }
 
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
