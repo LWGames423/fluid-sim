@@ -3,8 +3,11 @@
 #include <fstream>
 #include <GL/glut.h>
 #include <cmath>
+#include <random>
 
 #include <vector>
+
+#include "parallel_for.h"
 
 void reshape(int w, int h) {
     glViewport(0, 0, (GLsizei) w, (GLsizei) h);
@@ -18,19 +21,64 @@ void timer(int value) {
     glutTimerFunc(16, timer, 0);
 }
 
-struct Vector2
-{
+// inspired by C++2's Trevors Lab
+
+class Vector2 {
+public:
     float x;
     float y;
 
-    Vector2(float x1, float y1): x(x1),y(y1) {
+    Vector2(float x1, float y1): x(x1),y(y1) {}
+    Vector2():x(0), y(0) {}
 
+    Vector2 operator+(const Vector2 &other) {
+        return Vector2(other.x + x, other.y + y);
     }
 
-    Vector2():x(0), y(0) {
-
+    Vector2 operator-(const Vector2 &other) {
+        return Vector2(other.x - x, other.y - y);
     }
+    Vector2 operator-() const {
+        return Vector2(-x, -y);
+    }
+
+    Vector2 operator*(float factor) const {
+        return Vector2(x * factor, y * factor);
+    }
+    Vector2 operator/(float factor) const {
+        return Vector2(x / factor, y / factor);
+    }
+
+    bool operator==(const Vector2 &other) const {
+        return x == other.x && y == other.y;
+    }
+    bool operator!=(const Vector2 &other) const {
+        return !(x == other.x && y == other.y);
+    }
+
+
+    float operator*(const Vector2 &other) const {
+        return other.x * x + other.y * y;
+    }
+
+
+    float magnitude() const { return std::sqrt(x * x + y * y); }
+
+
+    Vector2 normalized() const {
+        float m = magnitude();
+        if (m == 0) {
+            return Vector2(0.0f, 0.0f);
+        } else {
+            return Vector2(x / m, y / m);
+        }
+    }
+
 };
+
+void printVector2(const Vector2& v, const std::string& name) {
+    std::cout << name << ": (" << v.x << ", " << v.y << ")" << std::endl;
+}
 
 void drawCircle(float cx, float cy, float r) {
     int numSegments = 100;
@@ -52,20 +100,29 @@ float boundX, boundY;
 
 // init
 
-int circleCount = 800;
-float particleSpacing = 10.0f;
+int numParticles = 800;
+float particleSpacing = 1.0f;
 
 // particle properties
 
 std::vector<Vector2> positions;
 std::vector<Vector2> velocities;
+std::vector<float> densities;
 float radius = 10.0f;
 float mass = 1.0f;
 
 // physics vals
 
-float gravity = -0.5f;
-float smoothingRadius = 1.0f;
+float gravity = -0.0f;
+float smoothingRadius = 3.75*radius;
+float targetDensity = 2.75;
+float pressureMultiplier = 500;
+
+float convertDensityToPressure(float density) {
+    float densityError = density - targetDensity;
+    float pressure = densityError * pressureMultiplier;
+    return pressure;
+}
 
 float smoothingKernel(float rad, float dst) {
     float vol = M_PI * pow(rad, 5) / 10;
@@ -73,47 +130,118 @@ float smoothingKernel(float rad, float dst) {
     return pow(val, 3) / vol;
 }
 
+float smoothingKernelDerivative(float rad, float dst) {
+    if (dst >= radius) return 0;
+
+    float f = (rad - dst);
+    float scale = -30 / (M_PI * pow(rad, 5));
+
+    return scale*pow(f, 2);
+}
+
 float calculateDensity(Vector2 samplepoint) {
     float density = 0;
 
-    for (auto position: positions) {
-        float dst = sqrt(pow(position.x - samplepoint.x,2) - (position.y - samplepoint.y,2));
+    for (int i = 0; i < positions.size(); i++) {
+        float dst = (positions[i]-samplepoint).magnitude();
         float influence = smoothingKernel(smoothingRadius, dst);
         density+= mass*influence;
     }
     return density;
 }
 
+void updateDensities() {
+    for(int i = 0; i < numParticles; i++) {
+        densities[i] = calculateDensity(positions[i]);
+    }
+}
+
+Vector2 GetRandomDir() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> distrib(-1, 1);
+
+    return Vector2(distrib(gen), distrib(gen));
+}
+
+Vector2 calculatePressureForce(int particleIndex) {
+    Vector2 pressureForce;
+
+    for(int otherParticleIndex = 0; otherParticleIndex < numParticles; otherParticleIndex++) {
+
+        if(particleIndex == otherParticleIndex) continue;
+
+        Vector2 offset = positions[otherParticleIndex] - positions[particleIndex];
+
+        float dst = offset.magnitude();
+        Vector2 dir = dst == 0 ? GetRandomDir() : offset/dst;
+        float slope = smoothingKernelDerivative(dst, smoothingRadius);
+        float density = densities[otherParticleIndex];
+        pressureForce = pressureForce + dir * convertDensityToPressure(density) * slope * mass / density;
+    }
+    return pressureForce;
+}
+
+
 void display() {
     glClear(GL_COLOR_BUFFER_BIT);
 
     glColor3f(0.0f, 0.0f, 1.0f);
 
-    // initialize
+    // draw
 
     for(int i = 0; i < positions.size(); i++) {
         drawCircle(positions[i].x, positions[i].y, radius);
     }
 
-    // update
+    // calculations
 
-    for(int i = 0; i < positions.size(); i++) {
+    // apply gravity + calculate positions
+    PARALLEL_FOR_BEGIN(positions.size()) {
         velocities[i].y += gravity;
 
-        positions[i].x += velocities[i].x;
-        positions[i].y += velocities[i].y;
+        positions[i] = positions[i] + velocities[i];
 
-        // collisions
-        if(positions[i].y - radius < 0 || positions[i].y + radius > screenHeight) {
+        densities[i] = calculateDensity(positions[i]);
+    } PARALLEL_FOR_END();
+
+    // calc and apply presssure force
+    PARALLEL_FOR_BEGIN(positions.size()) {
+        Vector2 pressureForce = calculatePressureForce(i);
+        // f=ma; a = f/m
+        Vector2 pressureAccel = pressureForce/densities[i];
+        velocities[i] = pressureAccel;
+        // velocities[i].x += 0.1f;
+        // velocities[i].y += 0.1f;
+
+
+
+
+    } PARALLEL_FOR_END();
+
+    // collisions
+
+    PARALLEL_FOR_BEGIN(positions.size()) {
+        if(positions[i].y - radius < 0 ) {
             positions[i].y = radius;
             velocities[i].y = -velocities[i].y * 0.8f;
         }
-        if(positions[i].x - radius < 0 || positions[i].x + radius > screenWidth) {
+        else if(positions[i].y + radius > screenHeight) {
+            positions[i].y = screenHeight - radius;
+            velocities[i].y = -velocities[i].y * 0.8f;
+        }
+
+        if(positions[i].x - radius < 0 ) {
             positions[i].x = radius;
             velocities[i].x = -velocities[i].x * 0.8f;
         }
-
-    }
+        else if(positions[i].x + radius > screenWidth) {
+            positions[i].x = screenWidth - radius;
+            velocities[i].x = -velocities[i].x * 0.8f;
+        }
+     }PARALLEL_FOR_END();
+    // printVector2(velocities[7], "Density");
+    std::cout << calculateDensity(velocities[7]) << "\n";
 
     glutSwapBuffers();
     glutPostRedisplay();
@@ -128,8 +256,8 @@ int main(int argc, char** argv)
     glutCreateWindow("Hello world!");
 
     // initialize
-    int particlesPerRow = (int)sqrt(circleCount);
-    int particlesPerCol = (circleCount - 1) / particlesPerRow + 1;
+    int particlesPerRow = (int)sqrt(numParticles);
+    int particlesPerCol = (numParticles - 1) / particlesPerRow + 1;
     float spacing = radius*2 + particleSpacing;
 
     boundX = glutGet(GLUT_WINDOW_WIDTH) - radius;
@@ -138,7 +266,7 @@ int main(int argc, char** argv)
     screenWidth = glutGet(GLUT_WINDOW_WIDTH);
     screenHeight = glutGet(GLUT_WINDOW_HEIGHT);
 
-    for(int i = 0; i < circleCount; i++) {
+    for(int i = 0; i < numParticles; i++) {
         int row = i / particlesPerRow;
         int col = i % particlesPerRow;
 
@@ -151,7 +279,10 @@ int main(int argc, char** argv)
 
         positions.push_back(Vector2(x, y));
         velocities.push_back(Vector2());
+        densities.push_back(calculateDensity(positions[i]));
+        printVector2(positions[i], "Initial Position");
     }
+
 
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);

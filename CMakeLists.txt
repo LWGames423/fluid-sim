@@ -5,6 +5,7 @@ set(OpenGlLinkers -lglut -lGLU -lGL) # setting all the Glut libraries as one var
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_executable(fluid_sim main.cpp)
+add_executable(fluid_sim main.cpp
+        parallel_for.h)
 
 target_link_libraries(fluid_sim ${OpenGlLinkers}) # linking opengl libraries to the project
