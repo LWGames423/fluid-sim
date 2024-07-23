@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <GL/glut.h>
@@ -44,20 +45,44 @@ void drawCircle(float cx, float cy, float r) {
     glEnd();
 }
 
-int circleCount = 64;
+// VARS //
 
 int screenWidth, screenHeight;
 float boundX, boundY;
 
+// init
+
+int circleCount = 800;
 float particleSpacing = 10.0f;
 
-float radius = 10.0f;
+// particle properties
 
 std::vector<Vector2> positions;
 std::vector<Vector2> velocities;
+float radius = 10.0f;
+float mass = 1.0f;
+
+// physics vals
 
 float gravity = -0.5f;
+float smoothingRadius = 1.0f;
 
+float smoothingKernel(float rad, float dst) {
+    float vol = M_PI * pow(rad, 5) / 10;
+    float val = std::max(0.0f, rad-dst);
+    return pow(val, 3) / vol;
+}
+
+float calculateDensity(Vector2 samplepoint) {
+    float density = 0;
+
+    for (auto position: positions) {
+        float dst = sqrt(pow(position.x - samplepoint.x,2) - (position.y - samplepoint.y,2));
+        float influence = smoothingKernel(smoothingRadius, dst);
+        density+= mass*influence;
+    }
+    return density;
+}
 
 void display() {
     glClear(GL_COLOR_BUFFER_BIT);
@@ -79,10 +104,15 @@ void display() {
         positions[i].y += velocities[i].y;
 
         // collisions
-        if(positions[i].y - radius < 0) {
+        if(positions[i].y - radius < 0 || positions[i].y + radius > screenHeight) {
             positions[i].y = radius;
             velocities[i].y = -velocities[i].y * 0.8f;
         }
+        if(positions[i].x - radius < 0 || positions[i].x + radius > screenWidth) {
+            positions[i].x = radius;
+            velocities[i].x = -velocities[i].x * 0.8f;
+        }
+
     }
 
     glutSwapBuffers();
