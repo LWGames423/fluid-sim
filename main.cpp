@@ -9,18 +9,6 @@
 
 #include "parallel_for.h"
 
-void reshape(int w, int h) {
-    glViewport(0, 0, (GLsizei) w, (GLsizei) h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluOrtho2D(0.0, (GLdouble) w, 0.0, (GLdouble) h);
-}
-
-void timer(int value) {
-    glutPostRedisplay();
-    glutTimerFunc(16, timer, 0);
-}
-
 // inspired by C++2's Trevors Lab
 
 class Vector2 {
@@ -76,6 +64,47 @@ public:
 
 };
 
+// VARS //
+
+int screenWidth, screenHeight;
+float boundX, boundY;
+
+float deltaTime = 16 * pow(10, -3);
+
+// init
+
+int numParticles = 500;
+float particleSpacing = 5.0f;
+
+// particle properties
+
+std::vector<Vector2> positions;
+std::vector<Vector2> predictedPositions;
+std::vector<Vector2> velocities;
+std::vector<float> densities;
+float radius = 5.0f;
+float mass = 1.0f;
+
+// physics vals
+
+float gravity = -0.0f;
+float smoothingRadius = 1.7f*radius;
+float targetDensity = 2.0f;
+float pressureMultiplier = 8.0f;
+
+
+void reshape(int w, int h) {
+    glViewport(0, 0, (GLsizei) w, (GLsizei) h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(0.0, (GLdouble) w, 0.0, (GLdouble) h);
+}
+
+void timer(int value) {
+    glutPostRedisplay();
+    glutTimerFunc(deltaTime * pow(10, 3), timer, 0);
+}
+
 void printVector2(const Vector2& v, const std::string& name) {
     std::cout << name << ": (" << v.x << ", " << v.y << ")" << std::endl;
 }
@@ -93,30 +122,6 @@ void drawCircle(float cx, float cy, float r) {
     glEnd();
 }
 
-// VARS //
-
-int screenWidth, screenHeight;
-float boundX, boundY;
-
-// init
-
-int numParticles = 800;
-float particleSpacing = 1.0f;
-
-// particle properties
-
-std::vector<Vector2> positions;
-std::vector<Vector2> velocities;
-std::vector<float> densities;
-float radius = 10.0f;
-float mass = 1.0f;
-
-// physics vals
-
-float gravity = -0.0f;
-float smoothingRadius = 3.75*radius;
-float targetDensity = 2.75;
-float pressureMultiplier = 500;
 
 float convertDensityToPressure(float density) {
     float densityError = density - targetDensity;
@@ -125,18 +130,23 @@ float convertDensityToPressure(float density) {
 }
 
 float smoothingKernel(float rad, float dst) {
-    float vol = M_PI * pow(rad, 5) / 10;
-    float val = std::max(0.0f, rad-dst);
-    return pow(val, 3) / vol;
+    if(0 <= dst && dst <= rad) {
+        float vol = 15/(M_PI * pow(rad, 6));
+        // std::cout << "r,d: " << rad << "," << dst <<  "\n";
+        // std::cout << "r-d: " << rad - dst << "\n";
+        float val = std::max(0.0f, rad-dst);
+        return pow(val, 3) * vol;
+    }
+    return 0;
 }
 
 float smoothingKernelDerivative(float rad, float dst) {
-    if (dst >= radius) return 0;
+    if (dst > rad) return 0;
 
-    float f = (rad - dst);
-    float scale = -30 / (M_PI * pow(rad, 5));
+    float v = (rad - dst);
+    float scale = -45.0f / (M_PI * pow(rad, 6));
 
-    return scale*pow(f, 2);
+    return pow(v, 2) * scale;
 }
 
 float calculateDensity(Vector2 samplepoint) {
@@ -164,20 +174,35 @@ Vector2 GetRandomDir() {
     return Vector2(distrib(gen), distrib(gen));
 }
 
+float calcSharedPressure(float densA, float densB) {
+    float pressureA = convertDensityToPressure(densA);
+    float pressureB = convertDensityToPressure(densB);
+
+    return (pressureA + pressureB)/2;
+}
+
 Vector2 calculatePressureForce(int particleIndex) {
     Vector2 pressureForce;
 
     for(int otherParticleIndex = 0; otherParticleIndex < numParticles; otherParticleIndex++) {
-
         if(particleIndex == otherParticleIndex) continue;
-
         Vector2 offset = positions[otherParticleIndex] - positions[particleIndex];
 
         float dst = offset.magnitude();
-        Vector2 dir = dst == 0 ? GetRandomDir() : offset/dst;
+        Vector2 dir;
+
+        if(dst == 0) {
+            dir = GetRandomDir();
+        }
+        else {
+            dir = offset/dst;
+        }
         float slope = smoothingKernelDerivative(dst, smoothingRadius);
+
         float density = densities[otherParticleIndex];
-        pressureForce = pressureForce + dir * convertDensityToPressure(density) * slope * mass / density;
+        float sharedPressure = calcSharedPressure(density, densities[particleIndex]);
+
+        pressureForce = pressureForce + ((dir * sharedPressure *  slope * mass) / density);
     }
     return pressureForce;
 }
@@ -188,6 +213,9 @@ void display() {
 
     glColor3f(0.0f, 0.0f, 1.0f);
 
+    screenWidth = glutGet(GLUT_WINDOW_WIDTH);
+    screenHeight = glutGet(GLUT_WINDOW_HEIGHT);
+
     // draw
 
     for(int i = 0; i < positions.size(); i++) {
@@ -196,13 +224,11 @@ void display() {
 
     // calculations
 
-    // apply gravity + calculate positions
+    // apply gravity + predict pos + densities
     PARALLEL_FOR_BEGIN(positions.size()) {
-        velocities[i].y += gravity;
-
-        positions[i] = positions[i] + velocities[i];
-
-        densities[i] = calculateDensity(positions[i]);
+        velocities[i].y += gravity * deltaTime;
+        predictedPositions[i] = positions[i]+velocities[i] * deltaTime;
+        densities[i] = calculateDensity(predictedPositions[i]);
     } PARALLEL_FOR_END();
 
     // calc and apply presssure force
@@ -210,13 +236,13 @@ void display() {
         Vector2 pressureForce = calculatePressureForce(i);
         // f=ma; a = f/m
         Vector2 pressureAccel = pressureForce/densities[i];
-        velocities[i] = pressureAccel;
-        // velocities[i].x += 0.1f;
-        // velocities[i].y += 0.1f;
+        velocities[i] = velocities[i] + pressureAccel * deltaTime;
 
+    } PARALLEL_FOR_END();
 
-
-
+    // calculate positions
+    PARALLEL_FOR_BEGIN(positions.size()) {
+        positions[i] = positions[i] + velocities[i] * deltaTime;
     } PARALLEL_FOR_END();
 
     // collisions
@@ -224,24 +250,23 @@ void display() {
     PARALLEL_FOR_BEGIN(positions.size()) {
         if(positions[i].y - radius < 0 ) {
             positions[i].y = radius;
-            velocities[i].y = -velocities[i].y * 0.8f;
+            velocities[i].y = -velocities[i].y * 1.0f;
         }
         else if(positions[i].y + radius > screenHeight) {
             positions[i].y = screenHeight - radius;
-            velocities[i].y = -velocities[i].y * 0.8f;
+            velocities[i].y = -velocities[i].y * 1.0f;
         }
 
         if(positions[i].x - radius < 0 ) {
             positions[i].x = radius;
-            velocities[i].x = -velocities[i].x * 0.8f;
+            velocities[i].x = -velocities[i].x * 1.0f;
         }
         else if(positions[i].x + radius > screenWidth) {
             positions[i].x = screenWidth - radius;
-            velocities[i].x = -velocities[i].x * 0.8f;
+            velocities[i].x = -velocities[i].x * 1.0f;
         }
      }PARALLEL_FOR_END();
-    // printVector2(velocities[7], "Density");
-    std::cout << calculateDensity(velocities[7]) << "\n";
+
 
     glutSwapBuffers();
     glutPostRedisplay();
@@ -251,7 +276,7 @@ int main(int argc, char** argv)
 {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-    glutInitWindowSize(1024, 576);
+    glutInitWindowSize(1920*0.4, 1200*0.4);
 
     glutCreateWindow("Hello world!");
 
@@ -280,7 +305,8 @@ int main(int argc, char** argv)
         positions.push_back(Vector2(x, y));
         velocities.push_back(Vector2());
         densities.push_back(calculateDensity(positions[i]));
-        printVector2(positions[i], "Initial Position");
+        predictedPositions.push_back(Vector2());
+
     }
 
 
